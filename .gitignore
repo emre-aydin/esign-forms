@@ -1,5 +1,15 @@
-target/
-*.class
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+*.rock
 .idea/
 *.iml
 .DS_Store
+private_key.pem
+.env

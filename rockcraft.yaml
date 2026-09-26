@@ -2,7 +2,7 @@ name: contract-generator-worker
 title: Contract Generator Temporal Worker
 summary: Temporal worker that generates fillable contract PDFs and sends them to DocuSign
 description: |
-  An OCI rock packaging the contract-generator library as a Java Temporal worker, intended to be
+  An OCI rock packaging the contract-generator library as a Python Temporal worker, intended to be
   used as the workload (oci-image) resource of the temporal-worker-k8s charm (2.0/stable).
 
   The worker registers the ContractSigningWorkflow on the configured task queue. The workflow
@@ -35,24 +35,34 @@ services:
       TEMPORAL_QUEUE: "contracts"
 
 parts:
-  worker-jar:
+  worker:
     plugin: nil
     source: .
+    build-snaps:
+      - astral-uv
     build-packages:
-      - openjdk-25-jdk-headless
+      - python3
+      - python3-venv
       - ca-certificates
+    # Build the venv at its final path (/app/venv) so the interpreter symlink and console-script
+    # shebangs stay valid in the image, then copy it into the part's install dir.
     override-build: |
       craftctl default
-      export JAVA_HOME=$(dirname $(dirname $(readlink -f $(which javac))))
-      ./mvnw -B -DskipTests package
+      export UV_PROJECT_ENVIRONMENT=/app/venv UV_PYTHON=/usr/bin/python3 \
+        UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy UV_COMPILE_BYTECODE=1
+      rm -rf /app/venv
+      uv sync --locked --no-dev --no-editable
       mkdir -p ${CRAFT_PART_INSTALL}/app
-      cp target/contract-generator-*-worker.jar \
-        ${CRAFT_PART_INSTALL}/app/contract-generator-worker.jar
+      cp -a /app/venv ${CRAFT_PART_INSTALL}/app/venv
 
   runtime:
     plugin: nil
     stage-packages:
-      - openjdk-25-jre-headless
+      - python3
+      # WeasyPrint's system libraries (Pango + HarfBuzz subsetting).
+      - libpango-1.0-0
+      - libpangoft2-1.0-0
+      - libharfbuzz-subset0
       - bash
       - coreutils
       - ca-certificates

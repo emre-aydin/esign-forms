@@ -6,4 +6,4 @@
 # (e.g. DOCUSIGN_* secrets) into this container's environment before starting the service.
 set -euo pipefail
 
-exec java -jar /app/contract-generator-worker.jar
+exec /app/venv/bin/contract-generator-worker

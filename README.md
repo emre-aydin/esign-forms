@@ -1,160 +1,238 @@
-# contract-generator
+# esign-forms
 
-Python library that renders a **Jinja2 HTML contract** into a **PDF with fillable AcroForm
-fields**, ready to hand off to an e-signature service such as DocuSign.
+Render **Jinja2 HTML templates** into **PDFs with fillable AcroForm fields**, send them to
+**DocuSign** for signature, and read the filled/signed values back. Use it as a Python library,
+or as the `esign-forms` **CLI** from any language (e.g. a Go service calling it as a
+subprocess).
 
-Fillable regions are declared as ordinary **HTML form controls** (`<input>`, `<textarea>`,
-checkbox, radio, `<select>`) in the template. [WeasyPrint](https://weasyprint.org/) renders them
-directly into interactive AcroForm fields (`pdf_forms=True`) — there are no anchor-text
-placeholders or coordinate math. [pypdf](https://pypdf.readthedocs.io/) then validates and
-normalizes the form.
+Fillable regions are ordinary **HTML form controls** (`<input>`, `<textarea>`, checkbox, radio,
+`<select>`) in your template. [WeasyPrint](https://weasyprint.org/) renders them straight into
+interactive AcroForm fields, and [pypdf](https://pypdf.readthedocs.io/) validates and normalizes
+the form — no anchor text or coordinate math. DocuSign's tab auto-detection
+(`transformPdfFields`) turns those fields into signing tabs.
 
-## Requirements
-
-- **Python 3.13+** and [uv](https://docs.astral.sh/uv/) (`mise install` sets up both from
-  `mise.toml`).
-- WeasyPrint's system libraries (**Pango**, HarfBuzz):
-  - Debian/Ubuntu: `apt-get install libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0`
-  - macOS: `brew install pango`. The renderer finds Homebrew's libraries automatically
-    (it defaults `DYLD_FALLBACK_LIBRARY_PATH` to `/opt/homebrew/lib` or `/usr/local/lib` when
-    unset).
-
-## Build & test
+## Install
 
 ```bash
-uv sync                                  # create .venv and install deps (incl. dev tools)
-uv run pytest                            # run the test suite
-uv run pytest tests/test_contract_generator.py::test_generates_pdf_with_expected_fillable_fields
-uv run ruff check src tests scripts && uv run ruff format --check src tests scripts
-uv run mypy                              # strict type check
-uv build                                 # build sdist + wheel into dist/
+pip install esign-forms              # or: uv tool install esign-forms   (CLI only)
+pip install 'esign-forms[worker]'    # + the optional Temporal worker
 ```
 
-## Usage
+Requires **Python 3.12+** and WeasyPrint's system libraries (**Pango**, HarfBuzz) — a wheel
+can't ship these:
+
+- Debian/Ubuntu: `apt-get install libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0`
+- macOS: `brew install pango`. The renderer finds Homebrew's libraries automatically (it
+  defaults `DYLD_FALLBACK_LIBRARY_PATH` to `/opt/homebrew/lib` or `/usr/local/lib` when unset).
+
+Every release also publishes a `constraints.txt` (attached to the GitHub Release) that pins all
+dependencies to the versions CI tested. Use it for reproducible installs:
+
+```bash
+curl -fsSLO https://github.com/emre-aydin/esign-forms/releases/download/v0.1.0/constraints.txt
+uv tool install esign-forms==0.1.0 --constraints constraints.txt
+```
+
+## CLI
+
+```
+esign-forms generate      --template T --input J [--output PDF]   render a fillable PDF
+esign-forms send          --template T --input J                   render + send to DocuSign
+esign-forms send-pdf      --pdf PDF    --input J                   send an existing PDF
+esign-forms read          --pdf PDF                                print field values
+esign-forms parse-webhook --input BODY [--signature S]... [--no-verify] [--pdf-dir DIR]
+esign-forms --version
+```
+
+- Every file argument accepts **`-`** for stdin (inputs) or stdout (`--output`, default `-`).
+  At most one input per invocation may come from stdin.
+- `--template` is a Jinja2 HTML file. `{% include %}` / `{% extends %}` and relative
+  CSS/image URLs resolve from the template's directory. Templates read from stdin can't use
+  includes or relative URLs.
+- Input and output JSON use **camelCase** keys. Unknown keys are rejected, so typos fail fast.
+- DocuSign credentials come from the environment (`send`, `send-pdf`):
+
+  | Variable                                                | Purpose                                      |
+  |---------------------------------------------------------|----------------------------------------------|
+  | `DOCUSIGN_ACCOUNT_ID`                                   | account GUID                                 |
+  | `DOCUSIGN_OAUTH_BASE_PATH`                              | OAuth host, e.g. `account-d.docusign.com`    |
+  | `DOCUSIGN_INTEGRATION_KEY`                              | integration key (OAuth client id)            |
+  | `DOCUSIGN_USER_ID`                                      | impersonated user GUID                       |
+  | `DOCUSIGN_PRIVATE_KEY` *or* `DOCUSIGN_PRIVATE_KEY_PATH` | RSA private key PEM (inline) or a path to it |
+  | `DOCUSIGN_CONNECT_HMAC_SECRET`                          | `parse-webhook` HMAC secret(s), comma-separated for key rotation |
+
+### JSON contracts
+
+`generate` input (all keys optional):
+
+```json
+{
+  "data": {"title": "Consulting Services Agreement", "client": "Globex Corporation"},
+  "expectedFields": ["party.name", "sig.date"],
+  "requiredFields": ["sig.date"]
+}
+```
+
+`send` input is the `generate` input plus the envelope keys. `send-pdf` input takes only the
+envelope keys:
+
+```json
+{
+  "documentName": "Consulting Services Agreement",
+  "emailSubject": "Please sign: Consulting Services Agreement",
+  "signers": [{"name": "Jane Doe", "email": "jane@example.com", "routingOrder": 1}]
+}
+```
+
+Outputs:
+
+| Command         | stdout                                                                                     |
+|-----------------|--------------------------------------------------------------------------------------------|
+| `generate`      | PDF bytes (or nothing if `--output FILE`)                                                  |
+| `send`, `send-pdf` | `{"envelopeId": "..."}`                                                                 |
+| `read`          | `{"fields": {"party.name": "Jane Doe", "agree.terms": "true", ...}}`                        |
+| `parse-webhook` | `{"envelopeId", "status", "completed", "documents": [{"documentId", "name", "type", "fields", "pdfPath"?}]}` |
+
+`parse-webhook` verifies the raw body against `DOCUSIGN_CONNECT_HMAC_SECRET`, using each
+`--signature` (the `X-DocuSign-Signature-N` header values), unless you pass `--no-verify`.
+`--pdf-dir` writes each signed PDF as `<documentId>.pdf` and adds its absolute `pdfPath`.
+
+### Errors and exit codes
+
+Failures print `{"error": {"type": "...", "message": "..."}}` to **stderr**:
+
+| Exit | `type`          | Meaning                                                                               |
+|------|-----------------|---------------------------------------------------------------------------------------|
+| 0    |                 | success                                                                               |
+| 1    | `internal`      | unexpected error                                                                      |
+| 2    | `invalid_input` | bad arguments, unreadable file, invalid JSON/template/PDF, missing expected fields    |
+| 3    | `docusign`      | authenticating with or calling DocuSign failed                                        |
+| 4    | `hmac`          | Connect webhook HMAC verification failed                                              |
+| 5    | `render`        | HTML→PDF rendering failed (e.g. Pango not installed)                                  |
+
+### Calling from Go
+
+```go
+cmd := exec.CommandContext(ctx, "esign-forms", "send",
+    "--template", "/opt/app/templates/contract.html", "--input", "-")
+cmd.Stdin = bytes.NewReader(reqJSON) // {"data":{...},"documentName":...,"signers":[...]}
+cmd.Env = append(os.Environ(),
+    "DOCUSIGN_PRIVATE_KEY_PATH=/etc/app/docusign.pem" /* , DOCUSIGN_* ... */)
+var stdout, stderr bytes.Buffer
+cmd.Stdout, cmd.Stderr = &stdout, &stderr
+if err := cmd.Run(); err != nil {
+    // exit code via err.(*exec.ExitError).ExitCode(); details: json in stderr.Bytes()
+}
+var res struct{ EnvelopeID string `json:"envelopeId"` }
+_ = json.Unmarshal(stdout.Bytes(), &res)
+```
+
+### Installing into a rock
+
+Add a part to the consuming app's `rockcraft.yaml`. The tool is installed at its final path, so
+the venv's interpreter symlink and script shebangs stay valid in the image. `base` and
+`build-base` must match, and their `python3` must be 3.12 or newer (`ubuntu@24.04` or later).
+
+```yaml
+parts:
+  esign-forms:
+    plugin: nil
+    build-snaps: [astral-uv]
+    build-packages: [python3, python3-venv, ca-certificates, curl,
+                     libpango-1.0-0, libpangoft2-1.0-0, libharfbuzz-subset0]
+    override-build: |
+      VERSION=0.1.0
+      export UV_TOOL_DIR=/opt/esign-forms UV_TOOL_BIN_DIR=/usr/local/bin \
+        UV_PYTHON=/usr/bin/python3 UV_PYTHON_DOWNLOADS=never \
+        UV_LINK_MODE=copy UV_COMPILE_BYTECODE=1
+      curl -fsSLo constraints.txt \
+        https://github.com/emre-aydin/esign-forms/releases/download/v$VERSION/constraints.txt
+      uv tool install "esign-forms==$VERSION" --constraints constraints.txt
+      # Smoke test: fails the build if Pango/HarfBuzz can't be loaded.
+      echo '<html><body><form><input name="a"/></form></body></html>' > /tmp/t.html
+      echo '{}' | esign-forms generate --template /tmp/t.html --input - > /dev/null
+      mkdir -p $CRAFT_PART_INSTALL/opt $CRAFT_PART_INSTALL/usr/local/bin
+      cp -a /opt/esign-forms $CRAFT_PART_INSTALL/opt/
+      cp -a /usr/local/bin/esign-forms $CRAFT_PART_INSTALL/usr/local/bin/
+    stage-packages: [python3, libpango-1.0-0, libpangoft2-1.0-0, libharfbuzz-subset0,
+                     ca-certificates]
+```
+
+Set `XDG_CACHE_HOME=/tmp` (or another writable dir) in the service environment, so fontconfig
+can write its cache on a read-only or non-root filesystem.
+
+## Library usage
 
 ```python
 from pathlib import Path
 
-from contract_generator import ContractData, ContractGenerator
+from esign_forms import FormData, FormGenerator
 
-data = (
-    ContractData.builder()
-    .put("title", "Consulting Services Agreement")
-    .put("provider", "Acme Consulting LLC")
-    .put("client", "Globex Corporation")
-    .put("effectiveDate", "2026-09-13")
-    .put("recital", "The Provider agrees to deliver consulting services to the Client.")
-    .build()
-)  # a plain dict works too: ContractGenerator().generate("contract", {"title": ...})
+data = FormData.builder().put("title", "Consulting Services Agreement").build()
+# (a plain dict works too)
 
-pdf = ContractGenerator().generate("contract", data)
-Path("contract.pdf").write_bytes(pdf)
-```
-
-Optionally assert that specific fields exist in the output:
-
-```python
-pdf = ContractGenerator().generate("contract", data, {"party.name", "sig.date"})
-```
-
-Optionally also mark some of those fields as required (sets the AcroForm Required flag, which
-DocuSign auto-detection carries over to the resulting tab — see "DocuSign hand-off" below):
-
-```python
-pdf = ContractGenerator().generate(
-    "contract", data,
-    {"party.name", "sig.date"},   # expected fields
-    {"sig.date"},                 # required fields
+pdf = FormGenerator().generate(
+    Path("examples/contract.html"),    # a Path = template file; a str = template text
+    data,
+    {"party.name", "sig.date"},        # optional: fields that must exist
+    {"sig.date"},                      # optional: fields to mark Required
 )
+values = FormGenerator().read_values(Path("filled.pdf"))   # bytes, path, or binary stream
 ```
 
 Validation failures raise `form.PostProcessError` (e.g.
-`Expected form fields are missing: [does.not.exist]`); an invalid field name raises `ValueError`.
+`Expected form fields are missing: [does.not.exist]`). An invalid field name raises
+`ValueError`, and a missing template file raises `FileNotFoundError`.
 
-## Reading filled values
+### Read semantics
 
-Once a user has filled in the generated PDF (in Acrobat, a browser, or after a round trip through
-a signing service), read the values back by field name — the inverse of `generate`:
-
-```python
-values = ContractGenerator().read_values(Path("filled-contract.pdf"))
-# values["party.name"] -> "Jane Doe"
-# values["agree.terms"] -> "true"
-```
-
-`read_values` accepts `bytes`, a path (`str`/`Path`), or a binary stream (read but not closed).
-`form.ContractFormReader` implements this directly if you don't need the rest of the facade.
-
-Value conventions:
-
-- Text / textarea / choice fields return the typed value, or `""` if unfilled.
-- Checkboxes are normalized to `"true"` / `"false"`.
+- Text, textarea and choice fields return the typed value, or `""` if unfilled.
+- Checkboxes are normalized to `"true"` / `"false"`. Checked state is decided from the raw `/V`
+  name vs the on-appearance state, not `/Opt` lookups.
 - Radio groups return the selected option's `value`, or `""` if none is selected.
-- Only **terminal** fields are returned — dotted-name parents (e.g. `party` for `party.name`)
-  are internal AcroForm hierarchy nodes, not values, and are skipped.
-- A PDF with no AcroForm at all (a plain, non-fillable PDF) returns an **empty dict** rather than
-  raising. Unreadable input raises `form.ReadError`.
+- Only **terminal** fields are returned. Dotted-name parents (e.g. `party`) are skipped.
+- A PDF without an AcroForm returns `{}`. Unreadable input raises `form.ReadError`.
 
-## Pipeline
+### Pipeline
 
 ```
-ContractData ─▶ Jinja2 (ContractTemplateEngine) ─▶ HTML
-             ─▶ WeasyPrint (HtmlToPdfRenderer, pdf_forms=True) ─▶ PDF + AcroForm
-             ─▶ pypdf (AcroFormPostProcessor: hierarchy, validate, NeedAppearances) ─▶ bytes
+FormData ─▶ Jinja2 (TemplateEngine) ─▶ HTML
+         ─▶ WeasyPrint (HtmlToPdfRenderer, pdf_forms=True) ─▶ PDF + AcroForm
+         ─▶ pypdf (AcroFormPostProcessor: hierarchy, validate, NeedAppearances) ─▶ bytes
 
-bytes (filled PDF) ─▶ pypdf (ContractFormReader: walk AcroForm) ─▶ dict[str, str]
+bytes (filled PDF) ─▶ pypdf (FormReader) ─▶ dict[str, str]
 ```
-
-| Module / class                     | Responsibility                                                   |
-|------------------------------------|------------------------------------------------------------------|
-| `ContractGenerator`                | Public facade wiring the generate and read pipelines together    |
-| `template.ContractTemplateEngine`  | Jinja2 → HTML (autoescaped, templates loaded from the package)   |
-| `render.HtmlToPdfRenderer`         | WeasyPrint render with form fields; registers the bundled font   |
-| `form.FieldNaming`                 | AcroForm field-name convention + validation                      |
-| `form.AcroFormPostProcessor`       | Build field tree, validate, set `NeedAppearances`, reject dupes  |
-| `form.ContractFormReader`          | Reads current AcroForm field values from a (filled) PDF          |
-| `model.ContractData`               | Immutable holder for dynamic template values                     |
 
 ## Authoring templates
 
-Templates live in `src/contract_generator/resources/templates/*.html` and are rendered with
-**Jinja2** (autoescaping on; undefined variables render as empty strings). Insert values with
-`{{ name }}`.
+`examples/contract.html` is a complete sample. Templates are rendered by **Jinja2**, with
+autoescaping on; undefined variables render as empty strings.
 
-- **A bundled font is registered** at `resources/fonts/Contract-Regular.ttf` (Open Sans, SIL OFL)
-  under the family `ContractFont` (`render.FONT_FAMILY`); templates should use that family so
-  output doesn't depend on the host's installed fonts.
-- **Give controls explicit dimensions** (`width`/`height`) — the widget rectangle is the
+- **Use the bundled font.** Open Sans (SIL OFL) is registered under the family
+  `EsignFormsFont` (`render.FONT_FAMILY`), so output doesn't depend on the host's fonts.
+- **Give controls explicit dimensions** (`width`/`height`). The widget rectangle is the
   control's CSS box.
-- **The control's `name` attribute becomes the AcroForm field name.** Names must satisfy
-  `FieldNaming` (start with a letter; only letters, digits, `.`, `_`, `-`). Dotted names such as
-  `party.name` become a hierarchical field (`party` → `name`) whose fully-qualified name is
-  `party.name`. WeasyPrint writes the dotted name flat; `AcroFormPostProcessor` rebuilds the
-  proper parent/kid tree.
+- **The control's `name` becomes the AcroForm field name.** Names must satisfy `FieldNaming`:
+  start with a letter, and use only letters, digits, `.`, `_` and `-`. Dotted names
+  (`party.name`) become a hierarchical field.
+- **Signature boxes:** name a text field so it contains `DocusignSignHere` (e.g.
+  `DocusignSignHere1`, see `FieldNaming.sign_here(1)`). DocuSign converts it into a SignHere tab.
+  All converted tabs go to the first signer, and field names don't route tabs to individual
+  signers.
 
-### Control-type support
+| HTML control              | AcroForm result                                              |
+|---------------------------|--------------------------------------------------------------|
+| `<input type="text">`     | text field                                                   |
+| `<textarea>`              | multiline text field                                         |
+| `<input type="checkbox">` | checkbox                                                     |
+| `<input type="radio">`    | radio group (one field per `name`, export values = `value`)  |
+| `<select>`                | choice field                                                 |
 
-| HTML control              | AcroForm result                                                                                                      |
-|---------------------------|----------------------------------------------------------------------------------------------------------------------|
-| `<input type="text">`     | text field                                                                                                           |
-| `<textarea>`              | multiline text field                                                                                                 |
-| `<input type="checkbox">` | checkbox                                                                                                             |
-| `<input type="radio">`    | radio group (one field per `name`, export values from `value`)                                                       |
-| `<select>`                | choice field                                                                                                         |
-| signature                 | no native control — use a text field named `DocusignSignHere<N>`; DocuSign converts it to a SignHere tab (see below) |
+## DocuSign
 
-> **Checkbox reading:** `ContractFormReader` decides checked/unchecked by comparing the field's
-> raw `/V` name to its on-appearance state instead of trusting `/Opt` export-value lookups, which
-> some producers fill with placeholders.
-
-## DocuSign hand-off
-
-Sending a generated PDF to DocuSign for signature is built in (package
-`contract_generator.docusign`). It uses the official
-[`docusign-esign`](https://pypi.org/project/docusign-esign/) SDK with **JWT Grant** auth (a
-service integration; no browser flow) and DocuSign's tab **auto-detection**: the PDF's AcroForm
-fields are converted into signing tabs on import, so there's no manual tab placement or coordinate
-mapping to maintain.
+Sending uses the official [`docusign-esign`](https://pypi.org/project/docusign-esign/) SDK with
+**JWT Grant** auth and tab **auto-detection** (`transformPdfFields=true`). Fields marked
+required in the PDF become required DocuSign tabs.
 
 ### One-time DocuSign app setup
 
@@ -164,106 +242,34 @@ mapping to maintain.
    `https://account-d.docusign.com/oauth/auth?response_type=code&scope=signature%20impersonation&client_id=<integration_key>&redirect_uri=<any_registered_uri>`
 4. Note the account id (GUID) and the impersonated user id (GUID) from the DocuSign Admin console.
 
-### Sending an envelope
+### Sending from Python
 
 ```python
-from contract_generator.docusign import DocuSignConfig, DocuSignSender, SendRequest, Signer
+from esign_forms.docusign import DocuSignConfig, DocuSignSender, SendRequest, Signer
 
-config = DocuSignConfig(
-    account_id=account_id,                        # DocuSign account id (GUID)
-    oauth_base_path="account-d.docusign.com",     # demo; "account.docusign.com" for production
-    integration_key=integration_key,              # JWT integration key (OAuth client id)
-    user_id=user_id,                              # impersonated user's GUID (consent granted)
-    private_key=Path("private_key.pem").read_bytes(),
-)
-
-pdf = ContractGenerator().generate(
-    "contract", data,
-    {"party.name", "party.email", "sig.name", "sig.date"},  # expected fields
-    {"party.name", "sig.name", "sig.date"},                 # required fields
-)
-
+config = DocuSignConfig.from_env()   # or DocuSignConfig(account_id=..., private_key=..., ...)
 envelope_id = DocuSignSender.for_live_docusign(config).send_for_signature(SendRequest(
-    "Consulting Services Agreement",
-    pdf,
-    "Please sign: Consulting Services Agreement",
-    [Signer("Jane Doe", "jane@example.com")],
+    "Consulting Services Agreement", pdf, "Please sign", [Signer("Jane Doe", "jane@example.com")],
 ))
 ```
 
-`scripts/live_send.py` is a ready-made version of this for manual testing.
+### Receiving signed documents (Connect webhook)
 
-### Signature boxes
-
-A form field whose name **contains** `DocusignSignHere` (e.g. `DocusignSignHere1`, built with
-`FieldNaming.sign_here(1)`) is converted by DocuSign into a SignHere tab because
-`EnvelopeFactory` always sends the document with `transform_pdf_fields="true"`. The trailing
-index only keeps names unique; converted tabs go to `assign_tabs_to_recipient_id` (`"1"`, the
-first signer). The bundled template's signature box is
-`<input name="DocusignSignHere1" id="sig.signature" />`.
-
-### Required fields
-
-`ContractGenerator.generate(template_name, data, expected_field_names, required_field_names)`
-marks the given fields' AcroForm **Required** flag. Combined with `transform_pdf_fields="true"`,
-DocuSign's auto-converted tabs inherit the required attribute — so `required_field_names` controls
-"must be filled before signing" in both the PDF and DocuSign, in one place.
-
-### Testing without DocuSign credentials
-
-`EnvelopeFactory` (builds the `EnvelopeDefinition`) and `DocuSignSender` (with a fake
-`DocuSignClient`) are unit-tested with no network calls. `JwtAuthenticator` and
-`EsignDocuSignClient` do real network I/O and are exercised only by
-`tests/docusign/test_docusign_live.py`, which is skipped unless `DOCUSIGN_LIVE_TEST=true` and the
-corresponding `DOCUSIGN_*` environment variables are set (see the module docstring). Run it with:
-
-```bash
-DOCUSIGN_LIVE_TEST=true \
-DOCUSIGN_ACCOUNT_ID=... DOCUSIGN_INTEGRATION_KEY=... DOCUSIGN_USER_ID=... \
-DOCUSIGN_PRIVATE_KEY_PATH=./private_key.pem \
-DOCUSIGN_SIGNER_NAME="Jane Doe" DOCUSIGN_SIGNER_EMAIL=jane@example.com \
-uv run pytest tests/docusign/test_docusign_live.py -s
-```
-
-### Scope & caveats
-
-- Only JWT Grant auth is supported (no authorization-code / implicit flows).
-- Tabs are auto-detected from the AcroForm; there's no explicit per-tab placement API.
-- With multiple signers, auto-detected tabs are all assigned to the first signer — field names do
-  not route tabs to individual signers. Single-signer envelopes are the supported path.
-- Out of scope: embedded signing (recipient views), envelope status polling.
-
-## Receiving signed documents (Connect webhook)
-
-Once an envelope is completed, [DocuSign Connect](https://developers.docusign.com/platform/webhooks/connect/)
-can POST a notification to your endpoint. When the Connect configuration has **"Include Documents"**
-enabled, that notification carries the signed PDF(s) inline. `ConnectWebhookParser` turns the raw
-notification body back into the field values — the inverse of the send pipeline.
-
-This library provides only the parsing method; wiring it to an HTTP route is up to you.
+With **"Include Documents"** enabled, DocuSign Connect POSTs the signed PDFs inline. Parse the
+raw body with `esign-forms parse-webhook` or from Python:
 
 ```python
-from contract_generator.docusign.webhook import ConnectWebhookParser
+from esign_forms.docusign.webhook import ConnectWebhookParser
 
-# raw_body: the exact request body bytes your endpoint received.
 envelope = ConnectWebhookParser().parse(raw_body)
-
 if envelope.is_completed:
-    values = envelope.fields()        # merged across the envelope's documents
-    # values["party.name"] -> "Jane Doe"
-    # values["agree.terms"] -> "true"
-
-    for doc in envelope.documents:
-        ...  # doc.name, doc.type ("content" / "summary"), doc.pdf_bytes, doc.fields
+    values = envelope.fields()      # merged across documents
 ```
 
-`SignedEnvelope` exposes `envelope_id`, `status`, and the tuple of `SignedDocument`s (each with its
-`document_id`, `name`, `type`, decoded `pdf_bytes`, and parsed `fields`). Parsing is
-**status-agnostic**: a notification for a not-yet-completed envelope (or one sent without
-documents) parses successfully into an empty `documents` tuple rather than raising — inspect
-`status` / `is_completed` to decide what to do. The completion-certificate ("summary") document
-has no form and parses to empty fields. Malformed JSON, a missing `data` object, or invalid base64
-`PDFBytes` raise `WebhookParseError`.
+Parsing works regardless of envelope status: a notification without documents parses into an
+empty `documents` tuple. Malformed JSON, a missing `data` object, or invalid base64 raises
+`WebhookParseError`. Only the JSON Connect format is supported, and the HTTP endpoint itself is
+up to you.
 
 ### Verifying the HMAC signature
 
@@ -271,7 +277,7 @@ If you enable HMAC security on the Connect configuration, DocuSign signs each re
 against the **raw** request body before parsing:
 
 ```python
-from contract_generator.docusign.webhook import ConnectHmacVerifier
+from esign_forms.docusign.webhook import ConnectHmacVerifier
 
 verifier = ConnectHmacVerifier()
 signature = request.headers.get("X-DocuSign-Signature-1")   # may be -1, -2, ... per key
@@ -283,69 +289,34 @@ if not verifier.verify(raw_body, signature, hmac_secret):
 The comparison is constant-time. Always verify the bytes exactly as received — re-serializing the
 parsed JSON changes the bytes and breaks verification.
 
-### Scope & caveats (webhook)
+### Scope & caveats
 
-- Only the **JSON** eSignature Connect payload format is parsed (legacy XML
-  `DocuSignEnvelopeInformation` is not supported).
-- Documents are only present when Connect has "Include Documents" enabled; otherwise the parser
-  returns an empty documents tuple. Fetching them from the API instead is out of scope.
+- JWT Grant auth only; no explicit per-tab placement; single-signer envelopes are the supported
+  path.
+- Out of scope: embedded signing, envelope status polling, legacy XML Connect payloads, and
+  fetching documents from the API when the webhook omits them.
 
-## Running as a Temporal worker (temporal-worker-k8s rock)
+## Temporal worker (optional)
 
-The generator can run as a [Temporal](https://temporal.io/) worker packaged as an OCI
-[rock](https://documentation.ubuntu.com/rockcraft/), suitable as the workload (`oci-image`)
-resource for the [`temporal-worker-k8s`](https://charmhub.io/temporal-worker-k8s?channel=2.0/stable)
-charm. The worker registers the `ContractSigningWorkflow` workflow on the configured task queue;
-the workflow takes a **template name + parameters**, generates the fillable PDF, and sends it to
-DocuSign, returning the envelope id.
-
-### Workflow contract
-
-Workflow type `ContractSigningWorkflow`; activities `generate_pdf` then `send_to_docusign`
-(2-minute start-to-close timeout, up to 3 attempts each). The input is a `ContractSigningRequest`
-dataclass, serialized with Temporal's default JSON converter (snake_case keys):
+`pip install 'esign-forms[worker]'` adds the `esign-forms-worker` command. It registers the
+`FormSigningWorkflow` (activities `generate_pdf` then `send_to_docusign`, with a 2-minute timeout
+and 3 attempts each). Without the extra installed, the command exits with an install hint.
 
 ```python
-from contract_generator.temporal import ContractSigningRequest, ContractSigningWorkflow, SignerInfo
+from esign_forms.temporal import FormSigningRequest, FormSigningWorkflow, SignerInfo
 
-request = ContractSigningRequest(
-    template_name="contract",                     # resources/templates/contract.html
-    parameters={
-        "title": "Consulting Services Agreement",
-        "provider": "Acme Consulting LLC",
-        "client": "Globex Corporation",
-        "effectiveDate": "2026-09-13",
-        "recital": "The Provider agrees to deliver consulting services.",
-    },
-    expected_field_names=frozenset({"party.name", "party.email"}),  # optional
-    required_field_names=frozenset({"party.name"}),  # -> required DocuSign tabs
+request = FormSigningRequest(
+    template_path="/srv/templates/contract.html",   # on the worker's filesystem
+    parameters={"title": "Consulting Services Agreement"},
+    required_field_names=frozenset({"party.name"}),
     document_name="Consulting Agreement",
-    email_subject="Please sign: Consulting Agreement",
+    email_subject="Please sign",
     signers=(SignerInfo("Jane Doe", "jane@example.com"),),
 )
-
-# A Temporal client (anywhere) starts the workflow on the worker's task queue:
 envelope_id = await client.execute_workflow(
-    ContractSigningWorkflow.generate_and_send, request,
-    id="contract-123", task_queue=os.environ["TEMPORAL_QUEUE"],
+    FormSigningWorkflow.generate_and_send, request, id="form-123", task_queue="forms",
 )
 ```
-
-Clients in other languages start workflow type `ContractSigningWorkflow` with a JSON object using
-the same snake_case keys (`signers` entries: `name`, `email`, `routing_order`).
-
-The bundled templates ship inside the installed package, so `template_name` resolves without
-mounting any template files.
-
-### Running locally
-
-```bash
-TEMPORAL_QUEUE=contracts uv run contract-generator-worker   # needs a Temporal server on :7233
-```
-
-### Environment variables
-
-Injected by the charm (core connection):
 
 | Variable                   | Purpose                                                  | Default          |
 |----------------------------|----------------------------------------------------------|------------------|
@@ -353,39 +324,36 @@ Injected by the charm (core connection):
 | `TEMPORAL_NAMESPACE`       | Temporal namespace                                       | `default`        |
 | `TEMPORAL_QUEUE`           | task queue to poll (**required**)                        | —                |
 | `TEMPORAL_TLS_ROOT_CAS`    | root CA PEM for a TLS connection                         | none (plaintext) |
-| `TEMPORAL_PROMETHEUS_PORT` | if set, serves worker metrics at `/metrics` on this port | disabled         |
+| `TEMPORAL_PROMETHEUS_PORT` | if set, serves metrics at `/metrics` on this port        | disabled         |
 
-DocuSign credentials (set via the charm's `environment` config), read by the `send_to_docusign`
-activity to build a `DocuSignConfig`:
+The `DOCUSIGN_*` variables from the CLI section also apply. The PDF passes between the two
+activities through workflow history, so keep Temporal's ~2 MB payload limit in mind.
 
-| Variable                                                | Purpose                                      |
-|---------------------------------------------------------|----------------------------------------------|
-| `DOCUSIGN_ACCOUNT_ID`                                   | account GUID                                 |
-| `DOCUSIGN_OAUTH_BASE_PATH`                              | OAuth host, e.g. `account-d.docusign.com`    |
-| `DOCUSIGN_INTEGRATION_KEY`                              | integration key (OAuth client id)            |
-| `DOCUSIGN_USER_ID`                                      | impersonated user GUID                       |
-| `DOCUSIGN_PRIVATE_KEY` *or* `DOCUSIGN_PRIVATE_KEY_PATH` | RSA private key PEM (inline) or a path to it |
-
-### Building and using the rock
+## Development
 
 ```bash
-rockcraft pack                 # produces contract-generator-worker_0.1.0_amd64.rock
-# upload the rock to your registry / import it, then attach it as the charm resource:
-juju deploy temporal-worker-k8s --channel 2.0/stable
-juju attach-resource temporal-worker-k8s oci-image=<your-registry>/contract-generator-worker:0.1.0
+mise install                    # Python 3.13 + uv (from mise.toml)
+uv sync                         # .venv with dev tools and the worker extra
+uv run pytest                   # tests (live DocuSign test skipped unless DOCUSIGN_LIVE_TEST=true)
+uv run ruff check src tests scripts && uv run ruff format --check src tests scripts
+uv run mypy
+uv build
 ```
 
-The rock is built on `ubuntu@26.04` with the distro `python3` plus Pango/HarfBuzz. `uv sync
---locked --no-dev` installs the project into `/app/venv`, and `/app/scripts/start-worker.sh`
-execs `/app/venv/bin/contract-generator-worker`.
+The live DocuSign test (`tests/docusign/test_docusign_live.py`) and `scripts/live_send.py`
+exercise real JWT auth and envelope creation. See their docstrings for the environment
+variables they need.
 
-### Scope & caveats (worker)
+### Releasing
 
-- Implements the **core** Temporal connection (host/namespace/queue/TLS) plus optional Prometheus
-  metrics. Activities are synchronous and run on a thread pool; the worker shuts down gracefully
-  on `SIGTERM`/`SIGINT`.
-- The generated PDF passes between the two activities through workflow history; this is fine for
-  typical contracts but note Temporal's ~2 MB payload limit for very large documents.
+1. One-time setup: on pypi.org, add a **pending trusted publisher** for project `esign-forms`:
+   owner `emre-aydin`, repo `esign-forms`, workflow `release.yml`, environment `pypi`. Create
+   the `pypi` environment under the repo's Settings → Environments.
+2. Bump `version` in `pyproject.toml` (`uv version --bump minor`), commit, then tag and push:
+   `git tag v0.2.0 && git push origin v0.2.0`.
+3. `.github/workflows/release.yml` then runs the tests, checks that the tag matches the version,
+   builds, exports `constraints.txt` from `uv.lock`, smoke-tests the wheel, publishes to PyPI,
+   and creates a GitHub Release with the wheel, sdist and `constraints.txt`.
 
 ## License
 

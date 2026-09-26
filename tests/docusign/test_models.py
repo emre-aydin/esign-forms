@@ -1,6 +1,6 @@
 import pytest
 
-from contract_generator.docusign import DocuSignConfig, SendRequest, Signer
+from esign_forms.docusign import DocuSignConfig, SendRequest, Signer
 
 
 def test_signer_validation() -> None:

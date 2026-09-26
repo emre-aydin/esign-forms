@@ -1,0 +1,94 @@
+name: Release
+
+# Publishes to PyPI on version tags (e.g. v0.2.0) via trusted publishing, and attaches the
+# wheel, sdist and a constraints.txt pinning the locked (CI-tested) dependency versions to a
+# GitHub Release. Consumers install with:
+#   uv tool install esign-forms==X.Y.Z --constraints constraints.txt
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Test and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install WeasyPrint system libraries
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+
+      - name: Check tag matches project version
+        run: |
+          version=$(uv version --short)
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match project version ${version}" >&2
+            exit 1
+          fi
+
+      - name: Run unit tests
+        run: uv sync --locked && uv run pytest
+
+      - name: Build wheel and sdist
+        run: uv build
+
+      - name: Export constraints
+        run: uv export --locked --no-dev --no-hashes --no-emit-project --format requirements-txt -o dist/constraints.txt
+
+      - name: Smoke-test the built wheel
+        run: |
+          uv tool install --python 3.12 dist/*.whl --constraints dist/constraints.txt
+          esign-forms --version
+          echo '{"data": {"title": "Smoke"}}' | esign-forms generate --template examples/contract.html --input - --output /tmp/smoke.pdf
+          esign-forms read --pdf /tmp/smoke.pdf
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/esign-forms/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Publish
+        run: uv publish --trusted-publishing always dist/*.whl dist/*.tar.gz
+
+  github-release:
+    name: GitHub Release
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes

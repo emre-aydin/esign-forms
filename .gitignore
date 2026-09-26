@@ -7,9 +7,9 @@ __pycache__/
 dist/
 build/
 *.egg-info/
-*.rock
 .idea/
 *.iml
 .DS_Store
 scripts/private_key.pem
 .env
+*.pem

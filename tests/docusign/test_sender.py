@@ -1,6 +1,6 @@
 from docusign_esign import EnvelopeDefinition
 
-from contract_generator.docusign import DocuSignSender, EnvelopeFactory, SendRequest, Signer
+from esign_forms.docusign import DocuSignSender, EnvelopeFactory, SendRequest, Signer
 
 FAKE_PDF = b"%PDF-1.4 fake contract bytes"
 

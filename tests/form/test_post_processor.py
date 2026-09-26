@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from contract_generator.form import AcroFormPostProcessor, ContractFormReader, PostProcessError
-from contract_generator.render import HtmlToPdfRenderer
+from esign_forms.form import AcroFormPostProcessor, FormReader, PostProcessError
+from esign_forms.render import HtmlToPdfRenderer
 from tests.conftest import plain_pdf
 
 
 def _render(body: str) -> bytes:
     return HtmlToPdfRenderer().render(
-        f'<html><body style="font-family: ContractFont"><form>{body}</form></body></html>'
+        f'<html><body style="font-family: EsignFormsFont"><form>{body}</form></body></html>'
     )
 
 
@@ -40,7 +40,7 @@ def test_radio_and_select_controls_round_trip() -> None:
         expected_field_names={"plan.tier", "plan.term"},
         required_field_names={"plan.tier"},
     )
-    values = ContractFormReader().read(pdf)
+    values = FormReader().read(pdf)
     assert values == {"plan.tier": "", "plan.term": "y"}
 
 

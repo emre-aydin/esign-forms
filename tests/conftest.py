@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import io
+from pathlib import Path
 
 import pytest
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import DictionaryObject, NameObject, TextStringObject
 
-from contract_generator import ContractData, ContractGenerator
-from contract_generator.form._acroform import acroform_of, on_states, walk_fields, widgets_of
+from esign_forms import FormData, FormGenerator
+from esign_forms.form._acroform import acroform_of, on_states, walk_fields, widgets_of
+
+EXAMPLE_TEMPLATE = Path(__file__).resolve().parent.parent / "examples" / "contract.html"
 
 
-def sample_data() -> ContractData:
+def sample_data() -> FormData:
     return (
-        ContractData.builder()
+        FormData.builder()
         .put("title", "Consulting Services Agreement")
         .put("provider", "Acme Consulting LLC")
         .put("client", "Globex Corporation")
@@ -59,7 +62,7 @@ def plain_pdf() -> bytes:
 
 @pytest.fixture(scope="session")
 def generated_pdf() -> bytes:
-    return ContractGenerator().generate("contract", sample_data())
+    return FormGenerator().generate(EXAMPLE_TEMPLATE, sample_data())
 
 
 @pytest.fixture(scope="session")

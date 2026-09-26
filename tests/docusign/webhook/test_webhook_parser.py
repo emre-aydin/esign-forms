@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from contract_generator.docusign.webhook import ConnectWebhookParser, WebhookParseError
+from esign_forms.docusign.webhook import ConnectWebhookParser, WebhookParseError
 from tests.conftest import plain_pdf
 
 parser = ConnectWebhookParser()

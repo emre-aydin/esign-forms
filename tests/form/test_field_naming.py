@@ -1,6 +1,6 @@
 import pytest
 
-from contract_generator.form import FieldNaming
+from esign_forms.form import FieldNaming
 
 
 def test_accepts_conventional_names() -> None:

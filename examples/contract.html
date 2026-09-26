@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    @page { size: A4; margin: 2cm; }
+    body { font-family: "EsignFormsFont", sans-serif; font-size: 11pt; color: #222; line-height: 1.5; }
+    h1 { font-size: 18pt; margin-bottom: 0; }
+    .subtitle { color: #666; margin-top: 4px; }
+    .clause { margin: 12px 0; }
+    .fill { display: block; margin: 6px 0; }
+    .fill label { display: block; font-weight: bold; margin-bottom: 2px; }
+    /* Form controls need explicit dimensions so WeasyPrint can size the AcroForm widget. */
+    input[type="text"] {
+      width: 260px; height: 22px;
+      padding: 2px; border: 1px solid #888;
+    }
+    textarea {
+      width: 100%; height: 60px; padding: 2px; border: 1px solid #888;
+    }
+    .sign-row { margin-top: 24px; }
+    .sign-row .fill { display: inline-block; margin-right: 24px; vertical-align: top; }
+    .checkbox-row input { width: 14px; height: 14px; }
+    /* Signature box: the name "DocusignSignHere1" is a DocuSign transform keyword that becomes a
+       SignHere tab (assigned to the first recipient) when the PDF is sent with
+       transformPdfFields=true. */
+    .signature-box input {
+      display: block; width: 320px; height: 48px;
+      padding: 2px; border: 1px solid #444;
+    }
+  </style>
+  <title>Contract</title>
+</head>
+<body>
+  <form>
+  <h1>{{ title }}</h1>
+  <p class="subtitle">
+    Between <span>{{ provider }}</span>
+    and <span>{{ client }}</span>,
+    effective <span>{{ effectiveDate }}</span>.
+  </p>
+
+  <div class="clause">{{ recital }}</div>
+
+  <div class="clause">
+    <strong>1. Counterparty details.</strong> Please complete the fields below.
+    <div class="fill">
+      <label for="party.name">Full legal name</label>
+      <input type="text" name="party.name" id="party.name" />
+    </div>
+    <div class="fill">
+      <label for="party.email">Email</label>
+      <input type="text" name="party.email" id="party.email" />
+    </div>
+    <div class="fill">
+      <label for="party.notes">Additional notes</label>
+      <textarea name="party.notes" id="party.notes"></textarea>
+    </div>
+  </div>
+
+  <div class="clause checkbox-row">
+    <input type="checkbox" name="agree.terms" id="agree.terms" />
+    <label for="agree.terms" style="display:inline; font-weight:bold;">
+      I have read and agree to the terms above.
+    </label>
+  </div>
+
+  <div class="sign-row">
+    <strong>2. Signature block.</strong>
+    <div>
+      <div class="fill">
+        <label for="sig.name">Signed by (name)</label>
+        <input type="text" name="sig.name" id="sig.name" />
+      </div>
+      <div class="fill">
+        <label for="sig.title">Title</label>
+        <input type="text" name="sig.title" id="sig.title" />
+      </div>
+      <div class="fill">
+        <label for="sig.date">Date</label>
+        <input type="text" name="sig.date" id="sig.date" />
+      </div>
+    </div>
+    <div class="fill signature-box">
+      <label for="sig.signature">Signature</label>
+      <input type="text" name="DocusignSignHere1" id="sig.signature" />
+    </div>
+  </div>
+  </form>
+</body>
+</html>

@@ -1,6 +1,6 @@
 import pytest
 
-from contract_generator.temporal import TemporalWorkerConfig
+from esign_forms.temporal import TemporalWorkerConfig
 
 
 def test_reads_all_values_from_env() -> None:

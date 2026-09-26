@@ -1,16 +1,18 @@
-# Copilot instructions for contract-generator
+# Copilot instructions for esign-forms
 
-Python library that renders a Jinja2 HTML contract into a PDF with **fillable AcroForm fields**
-(via WeasyPrint's native form-control rendering, `pdf_forms=True`) and reads the filled values
-back out. The output is meant to be handed off to an e-signature service such as DocuSign.
+Python library + CLI (`esign-forms`, published to PyPI) that renders a Jinja2 HTML template into
+a PDF with **fillable AcroForm fields** (via WeasyPrint's native form-control rendering,
+`pdf_forms=True`), sends it to DocuSign, and reads filled/signed values back out. The main
+consumer is a Go service that installs the CLI into its rock with `uv tool install` and calls it
+as a subprocess, so the **CLI's JSON contract and exit codes are a public API**.
 
 ## Build, test, run
 
-Use **uv** (pinned via `mise.toml` together with Python 3.13). Dependencies are locked in
+Use **uv** (pinned via `mise.toml` together with Python 3.13 for development). Dependencies are locked in
 `uv.lock`; add/remove them with `uv add` / `uv remove`, never by hand-editing the lock.
 
 ```bash
-uv sync                    # create .venv, install deps + dev tools
+uv sync                    # create .venv, install deps + dev tools (+ the worker extra)
 uv run pytest              # run all tests
 uv run ruff check src tests scripts && uv run ruff format --check src tests scripts
 uv run mypy                # strict mode, configured in pyproject.toml
@@ -21,17 +23,20 @@ Run a single test file or test (pytest node ids):
 
 ```bash
 uv run pytest tests/form/test_form_reader.py
-uv run pytest tests/test_contract_generator.py::test_generates_pdf_with_expected_fillable_fields
+uv run pytest tests/test_form_generator.py::test_generates_pdf_with_expected_fillable_fields
 ```
 
-The console script `contract-generator-worker` (`contract_generator.temporal.worker:main`) is the
-Temporal worker entry point. `rockcraft pack` builds the OCI rock around it.
+Console scripts: `esign-forms` (`esign_forms.cli:main`) and `esign-forms-worker`
+(`esign_forms._worker_entry:main`, which prints an install hint when the `worker` extra is
+missing).
 
-CI (`.github/workflows/ci.yml`) runs pytest plus ruff + mypy. Keep all three green.
+CI (`.github/workflows/ci.yml`) runs pytest on Python 3.12 and 3.13 plus ruff + mypy. Keep them
+green. `.github/workflows/release.yml` publishes on `v*` tags (details under "Releasing").
 
 ## Toolchain constraints
 
-- **Python ≥ 3.13** (`requires-python`). Modern syntax (`X | Y`, `match`, PEP 695) is fine.
+- **Python ≥ 3.12** (`requires-python`; ruff/mypy target 3.12). Consumers' rocks use the
+  distro `python3` (24.04 = 3.12), so don't use 3.13-only syntax or stdlib APIs.
 - **WeasyPrint needs system Pango/HarfBuzz** (`libpango-1.0-0 libpangoft2-1.0-0
   libharfbuzz-subset0` on Ubuntu; `brew install pango` on macOS). On macOS `uv run` strips
   `DYLD_*`, so `render._ensure_macos_library_path()` defaults `DYLD_FALLBACK_LIBRARY_PATH` to
@@ -39,31 +44,39 @@ CI (`.github/workflows/ci.yml`) runs pytest plus ruff + mypy. Keep all three gre
   call time). `render.py` imports
   WeasyPrint lazily so the rest of the package imports without those libs.
 - **`docusign-esign`** provides the DocuSign SDK models/clients for the `docusign` package.
-- **`temporalio`** powers the `temporal` worker package; the time-skipping test server is
-  downloaded on first test run.
+- **`temporalio`** is an **optional extra** (`esign-forms[worker]`); the `dev` group pulls it in so
+  tests and mypy cover `temporal`. Nothing outside `esign_forms.temporal` / `_worker_entry` may
+  import it. The time-skipping test server is downloaded on first test run.
 
 ## Architecture
 
-Two inverse pipelines, both fronted by `ContractGenerator` (the main public entry point):
+Two inverse pipelines, both fronted by `FormGenerator` (the main public entry point):
 
 ```
-generate:  ContractData ─▶ ContractTemplateEngine (Jinja2) ─▶ HTML
-                        ─▶ HtmlToPdfRenderer (WeasyPrint) ─▶ PDF + AcroForm
-                        ─▶ AcroFormPostProcessor (pypdf) ─▶ bytes
+generate:  FormData ─▶ TemplateEngine (Jinja2) ─▶ HTML
+                    ─▶ HtmlToPdfRenderer (WeasyPrint) ─▶ PDF + AcroForm
+                    ─▶ AcroFormPostProcessor (pypdf) ─▶ bytes
 
-read:      bytes/path/stream ─▶ ContractFormReader (pypdf) ─▶ dict[str, str]
+read:      bytes/path/stream ─▶ FormReader (pypdf) ─▶ dict[str, str]
 ```
 
-Package `contract_generator` (`src/` layout):
-- `generator.ContractGenerator` — facade; `generate(...)` and `read_values(...)`.
-- `template.ContractTemplateEngine` — Jinja2 `PackageLoader` over `resources/templates`, autoescape on.
+Package `esign_forms` (`src/` layout):
+- `generator.FormGenerator` — facade; `generate(template, data, expected, required)` and
+  `read_values(...)`.
+- `template.TemplateEngine` — **no bundled templates.** `template` is a `Path`/`PathLike`
+  (loaded with a `FileSystemLoader` on its directory, so includes work; the renderer's `base_url`
+  is that directory so relative CSS/images resolve) or a `str` of template text
+  (`from_string`, no base URL). Autoescape on; undefined renders empty.
+- `cli` — the `esign-forms` CLI (see below).
 - `render.HtmlToPdfRenderer` — WeasyPrint render; registers the bundled font.
 - `form.AcroFormPostProcessor` — rebuilds the field tree, validates names, sets
   `NeedAppearances`, rejects duplicates, sets the Required flag.
-- `form.ContractFormReader` — extracts field values from a filled PDF.
+- `form.FormReader` — extracts field values from a filled PDF.
 - `form.FieldNaming` — the field-name convention + validation.
 - `form._acroform` — shared pypdf field-tree walking helpers (internal).
-- `model.ContractData` — immutable holder (builder or plain mapping) for template values.
+- `model.FormData` — immutable holder (builder or plain mapping) for template values.
+
+`examples/contract.html` is the sample template and the test fixture (`tests.conftest.EXAMPLE_TEMPLATE`).
 
 The fillable regions are **not** placed by anchor text or coordinates: they are ordinary HTML
 form controls (`<input>`, `<textarea>`, checkbox, radio, `<select>`) in the template, whose
@@ -81,7 +94,7 @@ form controls (`<input>`, `<textarea>`, checkbox, radio, `<select>`) in the temp
   `/T`/`/TU`/`/FT` from the widgets; otherwise duplicate detection would fire. Radio on-states are
   indices (`/0`, `/1`) into the group's `/Opt`, which the reader maps back to export values.
 - **A font must be registered**: `HtmlToPdfRenderer` injects an `@font-face` for the bundled
-  `resources/fonts/Contract-Regular.ttf` (Open Sans, SIL OFL) under the family `ContractFont`
+  `resources/fonts/OpenSans-Regular.ttf` (Open Sans, SIL OFL) under the family `EsignFormsFont`
   (`render.FONT_FAMILY`); templates must use that family.
 - **Field names must satisfy `FieldNaming`**: start with a letter; only letters, digits, `.`,
   `_`, `-` (checked with `re.fullmatch`). Invalid names raise `ValueError`.
@@ -96,7 +109,7 @@ form controls (`<input>`, `<textarea>`, checkbox, radio, `<select>`) in the temp
 - **Checkbox values are read from the raw `/V` name**, compared to the widget's non-`/Off`
   on-appearance state, and normalized to `"true"`/`"false"`. Don't switch to `/Opt`-based
   export-value lookups — some producers write placeholder `/Opt` arrays.
-- **`ContractFormReader` returns terminal fields only** and returns an **empty dict** (never
+- **`FormReader` returns terminal fields only** and returns an **empty dict** (never
   raises) for a PDF with no AcroForm. Unloadable input raises `ReadError`.
 - **Error messages are asserted by tests** (e.g. `Expected form fields are missing: [a, b]` —
   names sorted). Keep them stable.
@@ -105,7 +118,7 @@ form controls (`<input>`, `<textarea>`, checkbox, radio, `<select>`) in the temp
 
 ## Signatures / DocuSign
 
-`contract_generator.docusign` sends the generated PDF to DocuSign for signature via the official
+`esign_forms.docusign` sends the generated PDF to DocuSign for signature via the official
 `docusign-esign` SDK, using **JWT Grant** auth and tab **auto-detection**
 (`Document.transform_pdf_fields="true"` — no manual tab placement/coordinates).
 
@@ -116,10 +129,14 @@ form controls (`<input>`, `<textarea>`, checkbox, radio, `<select>`) in the temp
   REST base URI via the userinfo endpoint, sets `ApiClient.host` to `<base_uri>/restapi`) and
   `EsignDocuSignClient` (calls `EnvelopesApi.create_envelope`). Exercised by
   `tests/docusign/test_docusign_live.py`, skipped unless `DOCUSIGN_LIVE_TEST=true` and the other
-  `DOCUSIGN_*` env vars are set (see its docstring). `scripts/live_send.py` is a manual sender.
+  `DOCUSIGN_*` env vars are set (see its docstring). `scripts/live_send.py` is a manual sender
+  (reads `private_key.pem` next to itself).
 - `DocuSignConfig`, `Signer`, `SendRequest` are frozen dataclasses that validate in
   `__post_init__` (blank strings → `ValueError`); the private key is excluded from `repr`.
-- **Required fields, in both places:** `ContractGenerator.generate(..., expected_field_names,
+  `DocuSignConfig.from_env(env)` reads the `DOCUSIGN_*` variables (`DOCUSIGN_PRIVATE_KEY` inline
+  wins over `DOCUSIGN_PRIVATE_KEY_PATH`) and raises `ValueError` when something is missing; the
+  CLI and the Temporal activities both use it.
+- **Required fields, in both places:** `FormGenerator.generate(..., expected_field_names,
   required_field_names)` sets the AcroForm Required flag; because `EnvelopeFactory` always sets
   `transform_pdf_fields="true"`, DocuSign's auto-converted tabs inherit it.
 - **Multi-signer caveat:** auto-converted tabs are all assigned to one recipient — field names do
@@ -129,12 +146,12 @@ form controls (`<input>`, `<textarea>`, checkbox, radio, `<select>`) in the temp
 
 ## Receiving signed docs (`docusign.webhook`)
 
-`contract_generator.docusign.webhook` parses the **inbound** DocuSign Connect notification back
+`esign_forms.docusign.webhook` parses the **inbound** DocuSign Connect notification back
 into form values — the inverse of the send pipeline.
 
 - `ConnectWebhookParser.parse(bytes | str)` → `SignedEnvelope(envelope_id, status, documents)`;
   each `SignedDocument` carries `pdf_bytes` + parsed `fields`. It reuses
-  `form.ContractFormReader`, so all the reader's conventions apply to `SignedDocument.fields`.
+  `form.FormReader`, so all the reader's conventions apply to `SignedDocument.fields`.
 - **Only the JSON eSignature Connect format is parsed.** The base64 PDF lives at
   `data.envelopeSummary.envelopeDocuments[].PDFBytes` — note **`PDFBytes`**, *not*
   `documentBase64` as in the SDK's `EnvelopeDocument` model. Parsed with stdlib `json`.
@@ -148,46 +165,66 @@ into form values — the inverse of the send pipeline.
 - Out of scope: legacy XML Connect payloads, fetching documents from the API when the webhook
   omits them, and the HTTP endpoint/routing itself (caller's responsibility).
 
-## Temporal worker & rock (`temporal`)
+## CLI (`cli.py`)
 
-`contract_generator.temporal` wraps the library as a Temporal worker, packaged as an OCI rock for
-the `temporal-worker-k8s` charm (2.0/stable). The workflow takes a template name + parameters,
-generates the PDF, then sends it to DocuSign.
+`esign-forms {generate,send,send-pdf,read,parse-webhook}` — argparse, no extra deps. The Go
+consumer depends on this contract, so treat changes as breaking and document them in the README:
 
-- `ContractSigningWorkflow.generate_and_send(ContractSigningRequest)` → envelope id (workflow
-  type name `ContractSigningWorkflow`). It runs two activities from `ContractActivities`:
-  `generate_pdf` (wraps `ContractGenerator`) then `send_to_docusign` (wraps `DocuSignSender`),
-  each with a 2-minute start-to-close timeout and max 3 attempts. PDF bytes pass between them as a
-  top-level `bytes` payload through workflow history (~2 MB limit).
-- DTOs are frozen dataclasses (`ContractSigningRequest`, `SignerInfo`) handled by Temporal's
-  default JSON converter (snake_case keys); `__post_init__` normalizes `None` collections to
-  empty ones and copies them.
+- File args (`--template`, `--input`, `--pdf`, `--output`) accept `-` for stdin/stdout; **at
+  most one input** may be `-`. A template from stdin is template text (no includes/base URL).
+- JSON keys are **camelCase**; unknown keys are rejected (`_check_keys`). Inputs:
+  `{data, expectedFields, requiredFields}` for generation, `{documentName, emailSubject,
+  signers:[{name,email,routingOrder}]}` for sending (`send` takes both).
+- Success output goes to stdout (PDF bytes, or one JSON line). Failures write
+  `{"error": {"type", "message"}}` to stderr with exit codes `1 internal`, `2 invalid_input`
+  (argparse via `_Parser.error`, bad JSON/template/PDF, `ValueError`, `PostProcessError`,
+  `ReadError`, `OSError`), `3 docusign`, `4 hmac`, `5 render`.
+- `parse-webhook` requires `DOCUSIGN_CONNECT_HMAC_SECRET` (comma-separated secrets allowed) plus
+  `--signature` values, or `--no-verify`. `--pdf-dir` writes `<documentId>.pdf` (sanitized)
+  and adds `pdfPath`.
+- `main(argv, *, stdin, stdout, stderr, env) -> int` is fully injectable. Tests replace the
+  module-level `cli.sender_factory` to avoid network I/O (`tests/test_cli.py`).
+
+## Temporal worker (`temporal`, optional `[worker]` extra)
+
+`esign_forms.temporal` wraps the library as a Temporal worker. `temporal/__init__.py` raises a
+helpful `ImportError` if `temporalio` isn't installed. There is **no rock** in this repo anymore.
+
+- `FormSigningWorkflow.generate_and_send(FormSigningRequest)` → envelope id (workflow type name
+  `FormSigningWorkflow`). It runs two activities from `FormActivities`: `generate_pdf` (wraps
+  `FormGenerator`, loading `request.template_path` from the worker's filesystem) then
+  `send_to_docusign` (wraps `DocuSignSender`, config via `DocuSignConfig.from_env`), each with a
+  2-minute start-to-close timeout and max 3 attempts. PDF bytes pass between them as a top-level
+  `bytes` payload through workflow history (~2 MB limit).
+- DTOs are frozen dataclasses (`FormSigningRequest`, `SignerInfo`) handled by Temporal's default
+  JSON converter (snake_case keys); `__post_init__` normalizes `None` collections.
 - **Workflow sandbox:** importing `workflow.py` in the sandbox also runs the parent packages'
   `__init__`, which pull in pypdf/Jinja2/DocuSign (pypdf touches `shutil.which`, which the sandbox
   forbids). Always register the workflow with `workflow_runner=WORKFLOW_RUNNER` (from
   `temporal.workflow`), which passes those modules through.
-- Activities are **synchronous** methods, so the worker needs an `activity_executor`
-  (`ThreadPoolExecutor`).
+- Activities are **synchronous**, so the worker needs an `activity_executor` (`ThreadPoolExecutor`).
 - `TemporalWorkerConfig.from_env(Mapping)` reads `TEMPORAL_HOST`/`_NAMESPACE`/`_QUEUE`/
-  `_TLS_ROOT_CAS` (queue required; host/namespace defaulted). `ContractActivities` builds
-  `DocuSignConfig` from `DOCUSIGN_*` env (`DOCUSIGN_PRIVATE_KEY` inline or
-  `DOCUSIGN_PRIVATE_KEY_PATH`); env and the sender factory are injectable for tests.
-- `worker.main` connects (TLS via `TLSConfig(server_root_ca_cert=...)`), optionally serves
-  Prometheus `/metrics` on `TEMPORAL_PROMETHEUS_PORT` through the Temporal `Runtime` telemetry
-  config, and shuts down gracefully on SIGTERM/SIGINT.
-- Tests: `test_worker_config.py` (pure env parsing), `test_workflow.py`
-  (`WorkflowEnvironment.start_time_skipping()` + fake activities asserting generate→send
-  ordering), `test_activities.py` (`generate_pdf` on the bundled template, env → config).
-- Rock: `rockcraft.yaml` (`ubuntu@26.04`, distro `python3` + Pango/HarfBuzz stage-packages) runs
-  `uv sync --locked --no-dev --no-editable` into `/app/venv` (built at that exact path so
-  shebangs stay valid) and injects `rock/start-worker.sh` at `/app/scripts/start-worker.sh` (the
-  charm's Pebble command). Bundled templates ship inside the package.
-- **Out of scope** (temporal-lib-py extras): candid/google/OIDC auth, encryption codec, Sentry,
-  Vault — extension points only.
+  `_TLS_ROOT_CAS` (queue required). `worker.main` connects (TLS via
+  `TLSConfig(server_root_ca_cert=...)`), optionally serves Prometheus `/metrics` on
+  `TEMPORAL_PROMETHEUS_PORT`, and shuts down gracefully on SIGTERM/SIGINT.
+
+## Releasing
+
+Bump `project.version`, then tag `vX.Y.Z` and push the tag. `release.yml`:
+1. Runs the tests and checks that the tag matches `uv version --short`.
+2. Runs `uv build`.
+3. Exports `dist/constraints.txt` with `uv export --locked --no-dev --no-hashes --no-emit-project`
+   (base deps only, no worker extra).
+4. Smoke-tests the wheel via `uv tool install`.
+5. Publishes to PyPI with trusted publishing (environment `pypi`).
+6. Creates a GitHub Release with the wheel, sdist and `constraints.txt`.
+
+Consumers pin both the version and the constraints file. The sdist includes only `src`, `tests`,
+`examples`, README and LICENSE.
 
 ## When adding fields
 
-Adding a control to `resources/templates/contract.html` is a cross-file change: update the
-template, and if a test asserts the expected field set (`EXPECTED_FIELDS` in
-`tests/test_contract_generator.py`) or round-trips values (`tests/conftest.py`
-`fill_sample_fields`, `tests/form/test_form_reader.py`), update those too.
+Adding a control to `examples/contract.html` is a cross-file change: update the template, and if
+a test asserts the expected field set (`EXPECTED_FIELDS` in `tests/test_form_generator.py`) or
+round-trips values (`tests/conftest.py` `fill_sample_fields`, `tests/form/test_form_reader.py`),
+update those too.

@@ -4,15 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from contract_generator.docusign import DocuSignConfig, DocuSignSender, EnvelopeFactory
-from contract_generator.temporal import ContractActivities, ContractSigningRequest, SignerInfo
-from tests.conftest import fields_by_name
+from esign_forms.docusign import DocuSignConfig, DocuSignSender, EnvelopeFactory
+from esign_forms.temporal import FormActivities, FormSigningRequest, SignerInfo
+from tests.conftest import EXAMPLE_TEMPLATE, fields_by_name
 from tests.docusign.test_sender import FakeClient
 
 
-def _request() -> ContractSigningRequest:
-    return ContractSigningRequest(
-        template_name="contract",
+def _request() -> FormSigningRequest:
+    return FormSigningRequest(
+        template_path=str(EXAMPLE_TEMPLATE),
         parameters={
             "title": "Consulting Services Agreement",
             "provider": "Acme Consulting LLC",
@@ -28,8 +28,8 @@ def _request() -> ContractSigningRequest:
     )
 
 
-def test_generate_pdf_renders_bundled_template_into_acroform() -> None:
-    pdf = ContractActivities(env={}).generate_pdf(_request())
+def test_generate_pdf_renders_template_file_into_acroform() -> None:
+    pdf = FormActivities(env={}).generate_pdf(_request())
     assert pdf
     assert "party.name" in fields_by_name(pdf)
 
@@ -51,27 +51,25 @@ def test_send_to_docusign_builds_config_from_env(tmp_path: Path) -> None:
         seen.append(config)
         return DocuSignSender(EnvelopeFactory(), client)
 
-    activities = ContractActivities(env=env, sender_factory=factory)
+    activities = FormActivities(env=env, sender_factory=factory)
     assert activities.send_to_docusign(b"%PDF-1.4", _request()) == "env-1"
     assert seen[0].private_key == b"PEM"
     assert seen[0].account_id == "acct"
     assert client.captured is not None
     assert client.captured.recipients.signers[0].email == "jane@example.com"
 
-    inline = ContractActivities(
-        env={**env, "DOCUSIGN_PRIVATE_KEY": "INLINE"}, sender_factory=factory
-    )
+    inline = FormActivities(env={**env, "DOCUSIGN_PRIVATE_KEY": "INLINE"}, sender_factory=factory)
     inline.send_to_docusign(b"%PDF-1.4", _request())
     assert seen[1].private_key == b"INLINE"
 
 
 def test_send_to_docusign_requires_private_key() -> None:
-    with pytest.raises(RuntimeError, match="DOCUSIGN_PRIVATE_KEY or DOCUSIGN_PRIVATE_KEY_PATH"):
-        ContractActivities(env={}).send_to_docusign(b"%PDF", _request())
+    with pytest.raises(ValueError, match="DOCUSIGN_PRIVATE_KEY or DOCUSIGN_PRIVATE_KEY_PATH"):
+        FormActivities(env={}).send_to_docusign(b"%PDF", _request())
 
 
 def test_request_normalizes_none_collections() -> None:
-    request = ContractSigningRequest("contract", None, None, None, "d", "s", None)  # type: ignore[arg-type]
+    request = FormSigningRequest("t.html", None, None, None, "d", "s", None)  # type: ignore[arg-type]
     assert request.parameters == {}
     assert request.expected_field_names == frozenset()
     assert request.signers == ()

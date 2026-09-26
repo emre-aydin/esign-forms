@@ -18,9 +18,9 @@ from pathlib import Path
 
 import pytest
 
-from contract_generator import ContractGenerator
-from contract_generator.docusign import DocuSignConfig, DocuSignSender, SendRequest, Signer
-from tests.conftest import sample_data
+from esign_forms import FormGenerator
+from esign_forms.docusign import DocuSignConfig, DocuSignSender, SendRequest, Signer
+from tests.conftest import EXAMPLE_TEMPLATE, sample_data
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("DOCUSIGN_LIVE_TEST") != "true", reason="DOCUSIGN_LIVE_TEST is not 'true'"
@@ -42,8 +42,8 @@ def test_sends_generated_contract_for_signature() -> None:
         user_id=_env("DOCUSIGN_USER_ID"),
         private_key=Path(_env("DOCUSIGN_PRIVATE_KEY_PATH")).read_bytes(),
     )
-    pdf = ContractGenerator().generate(
-        "contract",
+    pdf = FormGenerator().generate(
+        EXAMPLE_TEMPLATE,
         sample_data(),
         {
             "party.name",
@@ -59,7 +59,7 @@ def test_sends_generated_contract_for_signature() -> None:
     request = SendRequest(
         "Consulting Services Agreement",
         pdf,
-        "Please sign: Consulting Services Agreement (contract-generator live test)",
+        "Please sign: Consulting Services Agreement (esign-forms live test)",
         [Signer(_env("DOCUSIGN_SIGNER_NAME"), _env("DOCUSIGN_SIGNER_EMAIL"))],
     )
     envelope_id = DocuSignSender.for_live_docusign(config).send_for_signature(request)

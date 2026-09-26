@@ -1,4 +1,4 @@
-from contract_generator.docusign.webhook import ConnectHmacVerifier
+from esign_forms.docusign.webhook import ConnectHmacVerifier
 
 # Precomputed with: Base64(HMAC-SHA256(key="topsecret", body='{"hello":"world"}'))
 BODY = b'{"hello":"world"}'

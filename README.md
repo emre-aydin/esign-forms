@@ -15,8 +15,9 @@ normalizes the form.
   `mise.toml`).
 - WeasyPrint's system libraries (**Pango**, HarfBuzz):
   - Debian/Ubuntu: `apt-get install libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0`
-  - macOS: `brew install pango`. Outside the test suite (which sets this itself), export
-    `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib` so WeasyPrint can find the libraries.
+  - macOS: `brew install pango`. The renderer finds Homebrew's libraries automatically
+    (it defaults `DYLD_FALLBACK_LIBRARY_PATH` to `/opt/homebrew/lib` or `/usr/local/lib` when
+    unset).
 
 ## Build & test
 

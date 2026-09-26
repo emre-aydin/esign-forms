@@ -34,8 +34,9 @@ CI (`.github/workflows/ci.yml`) runs pytest plus ruff + mypy. Keep all three gre
 - **Python ≥ 3.13** (`requires-python`). Modern syntax (`X | Y`, `match`, PEP 695) is fine.
 - **WeasyPrint needs system Pango/HarfBuzz** (`libpango-1.0-0 libpangoft2-1.0-0
   libharfbuzz-subset0` on Ubuntu; `brew install pango` on macOS). On macOS `uv run` strips
-  `DYLD_*`, so `tests/conftest.py` sets `DYLD_FALLBACK_LIBRARY_PATH` to Homebrew's lib dir before
-  WeasyPrint is imported (ctypes `find_library` reads it at call time). `render.py` imports
+  `DYLD_*`, so `render._ensure_macos_library_path()` defaults `DYLD_FALLBACK_LIBRARY_PATH` to
+  Homebrew's lib dir right before WeasyPrint is first imported (ctypes `find_library` reads it at
+  call time). `render.py` imports
   WeasyPrint lazily so the rest of the package imports without those libs.
 - **`docusign-esign`** provides the DocuSign SDK models/clients for the `docusign` package.
 - **`temporalio`** powers the `temporal` worker package; the time-skipping test server is

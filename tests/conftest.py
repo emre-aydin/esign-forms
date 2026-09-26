@@ -1,18 +1,6 @@
 from __future__ import annotations
 
 import io
-import os
-import sys
-from pathlib import Path
-
-# WeasyPrint locates Pango/GLib via ctypes.util.find_library, which honours
-# DYLD_FALLBACK_LIBRARY_PATH at lookup time. macOS strips DYLD_* variables across `uv run`, so
-# point it at Homebrew's lib dir here (before WeasyPrint is imported) when it isn't set.
-if sys.platform == "darwin" and not os.environ.get("DYLD_FALLBACK_LIBRARY_PATH"):
-    for _lib in ("/opt/homebrew/lib", "/usr/local/lib"):
-        if Path(_lib, "libpango-1.0.dylib").exists():
-            os.environ["DYLD_FALLBACK_LIBRARY_PATH"] = _lib
-            break
 
 import pytest
 from pypdf import PdfReader, PdfWriter

@@ -1,6 +1,6 @@
 [project]
 name = "esign-forms"
-version = "0.1.0"
+version = "0.2.0"
 description = "Render Jinja2 HTML templates into PDFs with fillable AcroForm fields, send them to DocuSign for signature, and read the filled values back."
 readme = "README.md"
 license = "Apache-2.0"
